@@ -53,6 +53,9 @@
         .copy-output { background: var(--text-dark); color: #ecf0f1; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; margin-top: 10px; }
         .filters-section { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; margin-bottom: 15px; padding: 15px; background: #f8f9fa; border-radius: 8px; align-items: center;}
         
+        /* Estilo mejorado para información de cache */
+        .cache-status { margin-top: 10px; padding: 8px 15px; background: rgba(76, 175, 80, 0.1); border-left: 4px solid #4CAF50; border-radius: 4px; font-size: 12px; }
+        
         @media (max-width: 900px) { .order-section-grid { grid-template-columns: 1fr; } .order-item { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -60,7 +63,10 @@
     <div class="container">
         <div id="loading-section" class="panel">
             <h1 style="font-size: 2rem;">Constructor de Pedidos</h1>
-            <p id="loading-status" style="color: #667eea; font-weight: 600;">Cargando catálogo desde la nube...</p>
+            <p id="loading-status" style="color: #667eea; font-weight: 600;">🔄 Cargando catálogo automáticamente...</p>
+            <div id="cache-status" class="cache-status" style="display: none;">
+                <strong>💾 Estado del cache:</strong> <span id="cache-info"></span>
+            </div>
         </div>
 
         <div id="main-app">
@@ -115,26 +121,127 @@
     <script>
         let allProducts = [], pricesBySku = {}, currentOrder = [];
 
-        const CATALOG_URL = 'https://raw.githubusercontent.com/leonardo7512/CORRECTORPRECIOS/main/2708CATALOGO_ACTUALIZADO3.csv';
+        // URLs con GitHub Pages como fuente principal y cache inteligente
+        const CATALOG_ALTERNATIVES = [
+            'https://leonardo7512.github.io/CORRECTORPRECIOS/2708CATALOGO_ACTUALIZADO3.csv', // ⭐ PRINCIPAL - Sin rate limits
+            './2708CATALOGO_ACTUALIZADO3.csv', // Relativa si está en la misma carpeta
+            'https://cdn.jsdelivr.net/gh/leonardo7512/CORRECTORPRECIOS@main/2708CATALOGO_ACTUALIZADO3.csv',
+            'https://raw.githubusercontent.com/leonardo7512/CORRECTORPRECIOS/main/2708CATALOGO_ACTUALIZADO3.csv'
+        ];
 
         async function loadCatalogFromUrl() {
             const statusEl = document.getElementById('loading-status');
-            try {
-                const urlWithCacheBuster = `${CATALOG_URL}?v=${new Date().getTime()}`;
-                const response = await fetch(urlWithCacheBuster);
-                if (!response.ok) throw new Error(`Error de red: ${response.statusText}`);
-                const csvText = await response.text();
-                Papa.parse(csvText, {
-                    delimiter: ";",
-                    skipEmptyLines: true,
-                    encoding: "UTF-8",
+            const cacheStatusEl = document.getElementById('cache-status');
+            const cacheInfoEl = document.getElementById('cache-info');
+            
+            // Cache inteligente de 4 horas (misma configuración que el corrector exitoso)
+            const cachedData = localStorage.getItem('constructorStandardV2Cache');
+            const cacheTime = localStorage.getItem('constructorStandardV2CacheTime');
+            const CACHE_DURATION = 4 * 60 * 60 * 1000; // 4 horas
+            
+            // Si hay cache válido, usarlo inmediatamente
+            if (cachedData && cacheTime && (Date.now() - parseInt(cacheTime)) < CACHE_DURATION) {
+                const remainingMinutes = Math.round((CACHE_DURATION - (Date.now() - parseInt(cacheTime))) / 60000);
+                statusEl.textContent = '✅ Catálogo desde cache local (super rápido)';
+                statusEl.style.color = 'var(--accent-green)';
+                
+                // Mostrar información del cache
+                cacheStatusEl.style.display = 'block';
+                cacheInfoEl.textContent = `Cache válido por ${remainingMinutes} minutos más`;
+                
+                Papa.parse(cachedData, {
+                    delimiter: ";", skipEmptyLines: true, encoding: "UTF-8",
                     complete: (results) => processCSVData(results.data),
+                    error: (err) => console.error('Error procesando cache:', err)
+                });
+                return;
+            }
+            
+            // Si hay cache expirado, usarlo mientras actualizamos
+            if (cachedData) {
+                statusEl.textContent = '⚠️ Usando cache, actualizando desde fuentes...';
+                statusEl.style.color = '#f0ad4e';
+                cacheStatusEl.style.display = 'block';
+                cacheInfoEl.textContent = 'Cache expirado, actualizando en segundo plano';
+                Papa.parse(cachedData, {
+                    delimiter: ";", skipEmptyLines: true, encoding: "UTF-8",
+                    complete: (results) => processCSVData(results.data)
+                });
+            }
+            
+            // Intentar actualizar desde fuentes automáticamente
+            try {
+                let response = null;
+                let successUrl = null;
+                
+                for (let urlIndex = 0; urlIndex < CATALOG_ALTERNATIVES.length; urlIndex++) {
+                    const currentUrl = CATALOG_ALTERNATIVES[urlIndex];
+                    console.log(`🔄 Constructor V2: Probando fuente ${urlIndex + 1}/${CATALOG_ALTERNATIVES.length}`);
+                    
+                    try {
+                        response = await fetch(currentUrl);
+                        
+                        if (response && response.ok) {
+                            successUrl = currentUrl;
+                            console.log(`✅ Constructor V2: Éxito con fuente ${urlIndex + 1}`);
+                            break;
+                        }
+                    } catch (error) {
+                        console.log(`❌ Constructor V2: Fuente ${urlIndex + 1} falló: ${error.message}`);
+                        if (urlIndex < CATALOG_ALTERNATIVES.length - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                    }
+                }
+                
+                if (!response || !response.ok) {
+                    throw new Error('Todas las fuentes temporalmente no disponibles');
+                }
+                
+                const csvText = await response.text();
+                const isNewVersion = csvText !== cachedData;
+                
+                // Actualizar cache
+                localStorage.setItem('constructorStandardV2Cache', csvText);
+                localStorage.setItem('constructorStandardV2CacheTime', Date.now().toString());
+                
+                Papa.parse(csvText, {
+                    delimiter: ";", skipEmptyLines: true, encoding: "UTF-8",
+                    complete: (results) => {
+                        processCSVData(results.data);
+                        const sourceName = successUrl.includes('leonardo7512.github.io') ? 'GitHub Pages' :
+                                          successUrl.startsWith('./') ? 'Archivo local' :
+                                          successUrl.includes('jsdelivr') ? 'jsDelivr CDN' : 'GitHub Raw';
+                        
+                        statusEl.textContent = isNewVersion ? 
+                            `✅ Catálogo actualizado desde: ${sourceName}` : 
+                            `✅ Catálogo verificado desde: ${sourceName} (sin cambios)`;
+                        statusEl.style.color = 'var(--accent-green)';
+                        
+                        // Actualizar información del cache
+                        cacheStatusEl.style.display = 'block';
+                        cacheInfoEl.textContent = `Nuevo cache válido por 4 horas desde ${sourceName}`;
+                        
+                        console.log(`✅ Constructor V2: Catálogo ${isNewVersion ? 'actualizado' : 'verificado'} desde ${sourceName}`);
+                    },
                     error: (err) => { throw new Error(`Error al procesar CSV: ${err.message}`); }
                 });
+                
             } catch (error) {
-                console.error("Fallo al cargar el catálogo:", error);
-                statusEl.innerText = `Error al cargar el catálogo. Revisa la URL o tu conexión.`;
-                statusEl.style.color = 'red';
+                console.error("Constructor V2: Error al actualizar catálogo:", error);
+                
+                // Si falló pero tenemos cache, mantener funcionando
+                if (cachedData) {
+                    statusEl.textContent = '⚠️ Fuentes temporalmente no disponibles - funcionando con cache';
+                    statusEl.style.color = '#f0ad4e';
+                    cacheStatusEl.style.display = 'block';
+                    cacheInfoEl.textContent = 'Funcionando con cache local, reintenta más tarde';
+                } else {
+                    statusEl.textContent = '❌ Error al cargar el catálogo. Reintenta en unos minutos.';
+                    statusEl.style.color = 'red';
+                    cacheStatusEl.style.display = 'block';
+                    cacheInfoEl.textContent = 'Sin conexión y sin cache disponible';
+                }
             }
         }
 
